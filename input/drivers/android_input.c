@@ -61,9 +61,15 @@ enum {
     AMOTION_EVENT_BUTTON_FORWARD = 1 << 4,
     AMOTION_EVENT_AXIS_VSCROLL = 9,
     AMOTION_EVENT_ACTION_HOVER_MOVE = 7,
-    AINPUT_SOURCE_STYLUS = 0x00004002,
+    AINPUT_SOURCE_STYLUS = 0x00004002 | AINPUT_SOURCE_CLASS_POINTER,
     AMOTION_EVENT_BUTTON_STYLUS_PRIMARY = 1 << 5,
     AMOTION_EVENT_BUTTON_STYLUS_SECONDARY = 1 << 6
+};
+#endif
+/* If using an NDK lower than 16b then add missing definition */
+#ifndef __ANDROID_API_O_MR1__
+enum {
+   AINPUT_SOURCE_MOUSE_RELATIVE = 0x00020000 | AINPUT_SOURCE_CLASS_NAVIGATION
 };
 #endif
 
@@ -85,7 +91,7 @@ enum {
 
 #define MAX_KEYS ((LAST_KEYCODE + 7) / 8)
 
-/* First ports are used to keep track of gamepad states. 
+/* First ports are used to keep track of gamepad states.
  * Last port is used for keyboard state */
 static uint8_t android_key_state[DEFAULT_MAX_PADS + 1][MAX_KEYS];
 
@@ -444,7 +450,7 @@ static void android_input_poll_main_cmd(void)
             bool enable_gyroscope       = (android_app->sensor_state_mask &
                   (UINT64_C(1) << RETRO_SENSOR_GYROSCOPE_DISABLE));
 
-            
+
             runloop_st->flags &= ~(RUNLOOP_FLAG_PAUSED
                                  | RUNLOOP_FLAG_IDLE);
             video_driver_unset_stub_frame();
@@ -627,7 +633,7 @@ static int android_check_quick_tap(android_input_t *android)
     * and then not touched again for 200ms
     * If so then return true and deactivate quick tap timer */
    retro_time_t now = cpu_features_get_time_usec();
-   if (android->quick_tap_time && 
+   if (android->quick_tap_time &&
          (now / 1000 - android->quick_tap_time / 1000000) >= 200)
    {
       android->quick_tap_time = 0;
@@ -638,7 +644,7 @@ static int android_check_quick_tap(android_input_t *android)
 }
 
 static INLINE void android_mouse_calculate_deltas(android_input_t *android,
-      AInputEvent *event,size_t motion_ptr)
+      AInputEvent *event,size_t motion_ptr,int source)
 {
    /* Adjust mouse speed based on ratio
     * between core resolution and system resolution */
@@ -657,30 +663,41 @@ static INLINE void android_mouse_calculate_deltas(android_input_t *android,
       y_scale = 2 * (float)geom->base_height / (float)custom_vp->height;
    }
 
-   /* This axis is only available on Android Nougat and on 
-    * Android devices with NVIDIA extensions */
-   if (p_AMotionEvent_getAxisValue)
+   /* AINPUT_SOURCE_MOUSE_RELATIVE is available on Oreo (SDK 26) and newer,
+    * it passes the relative coordinates in the regular X and Y parts.
+    * NOTE: AINPUT_SOURCE_* defines have multiple bits set so do full check */
+   if ((source & AINPUT_SOURCE_MOUSE_RELATIVE) == AINPUT_SOURCE_MOUSE_RELATIVE)
    {
-      x = AMotionEvent_getAxisValue(event,AMOTION_EVENT_AXIS_RELATIVE_X,
-            motion_ptr);
-      y = AMotionEvent_getAxisValue(event,AMOTION_EVENT_AXIS_RELATIVE_Y,
-            motion_ptr);
+      x = AMotionEvent_getX(event, motion_ptr);
+      y = AMotionEvent_getY(event, motion_ptr);
    }
-
-   /* If AXIS_RELATIVE had 0 values it might be because we're not 
-    * running Android Nougat or on a device
-    * with NVIDIA extension, so re-calculate deltas based on 
-    * AXIS_X and AXIS_Y. This has limitations
-    * compared to AXIS_RELATIVE because once the Android mouse cursor 
-    * hits the edge of the screen it is
-    * not possible to move the in-game mouse any further in that direction.
-    */
-   if (!x && !y)
+   else
    {
-      x = (AMotionEvent_getX(event, motion_ptr) - android->mouse_x_prev);
-      y = (AMotionEvent_getY(event, motion_ptr) - android->mouse_y_prev);
-      android->mouse_x_prev = AMotionEvent_getX(event, motion_ptr);
-      android->mouse_y_prev = AMotionEvent_getY(event, motion_ptr);
+      /* This axis is only available on Android Nougat and on
+      * Android devices with NVIDIA extensions */
+      if (p_AMotionEvent_getAxisValue)
+      {
+         x = AMotionEvent_getAxisValue(event,AMOTION_EVENT_AXIS_RELATIVE_X,
+               motion_ptr);
+         y = AMotionEvent_getAxisValue(event,AMOTION_EVENT_AXIS_RELATIVE_Y,
+               motion_ptr);
+      }
+
+      /* If AXIS_RELATIVE had 0 values it might be because we're not
+      * running Android Nougat or on a device
+      * with NVIDIA extension, so re-calculate deltas based on
+      * AXIS_X and AXIS_Y. This has limitations
+      * compared to AXIS_RELATIVE because once the Android mouse cursor
+      * hits the edge of the screen it is
+      * not possible to move the in-game mouse any further in that direction.
+      */
+      if (!x && !y)
+      {
+         x = (AMotionEvent_getX(event, motion_ptr) - android->mouse_x_prev);
+         y = (AMotionEvent_getY(event, motion_ptr) - android->mouse_y_prev);
+         android->mouse_x_prev = AMotionEvent_getX(event, motion_ptr);
+         android->mouse_y_prev = AMotionEvent_getY(event, motion_ptr);
+      }
    }
 
    android->mouse_x_delta = ceil(x) * x_scale;
@@ -697,13 +714,13 @@ static INLINE void android_input_poll_event_type_motion(
    bool keyup        = (
             action == AMOTION_EVENT_ACTION_UP
          || action == AMOTION_EVENT_ACTION_CANCEL
-         || action == AMOTION_EVENT_ACTION_POINTER_UP)
-         || (source == AINPUT_SOURCE_MOUSE &&
-             action != AMOTION_EVENT_ACTION_DOWN);
+         || action == AMOTION_EVENT_ACTION_POINTER_UP);
 
    /* If source is mouse then calculate button state
-    * and mouse deltas and don't process as touchscreen event */
-   if (source == AINPUT_SOURCE_MOUSE)
+    * and mouse deltas and don't process as touchscreen event.
+    * NOTE: AINPUT_SOURCE_* defines have multiple bits set so do full check */
+   if (    (source & AINPUT_SOURCE_MOUSE) == AINPUT_SOURCE_MOUSE
+        || (source & AINPUT_SOURCE_MOUSE_RELATIVE) == AINPUT_SOURCE_MOUSE_RELATIVE)
    {
       /* getButtonState requires API level 14 */
       if (p_AMotionEvent_getButtonState)
@@ -732,7 +749,7 @@ static INLINE void android_input_poll_event_type_motion(
             android->mouse_l = 0;
       }
 
-      android_mouse_calculate_deltas(android,event,motion_ptr);
+      android_mouse_calculate_deltas(android,event,motion_ptr,source);
 
       return;
    }
@@ -782,10 +799,10 @@ static INLINE void android_input_poll_event_type_motion(
          }
       }
 
-      if ((       action == AMOTION_EVENT_ACTION_MOVE 
-               || action == AMOTION_EVENT_ACTION_HOVER_MOVE) 
+      if ((       action == AMOTION_EVENT_ACTION_MOVE
+               || action == AMOTION_EVENT_ACTION_HOVER_MOVE)
             && ENABLE_TOUCH_SCREEN_MOUSE)
-         android_mouse_calculate_deltas(android,event,motion_ptr);
+         android_mouse_calculate_deltas(android,event,motion_ptr,source);
 
       for (motion_ptr = 0; motion_ptr < pointer_max; motion_ptr++)
       {
@@ -913,7 +930,7 @@ static bool android_is_keyboard_id(int id)
 static INLINE void android_input_poll_event_type_keyboard(
       AInputEvent *event, int keycode, int *handled)
 {
-   int keydown           = (AKeyEvent_getAction(event) 
+   int keydown           = (AKeyEvent_getAction(event)
          == AKEY_EVENT_ACTION_DOWN);
    unsigned keyboardcode = input_keymaps_translate_keysym_to_rk(keycode);
    /* Set keyboard modifier based on shift,ctrl and alt state */
@@ -967,7 +984,7 @@ static int android_input_get_id_port(android_input_t *android, int id,
    unsigned i;
    int ret = -1;
    if (source & (AINPUT_SOURCE_TOUCHSCREEN | AINPUT_SOURCE_MOUSE |
-            AINPUT_SOURCE_TOUCHPAD))
+            AINPUT_SOURCE_MOUSE_RELATIVE | AINPUT_SOURCE_TOUCHPAD))
          ret = 0; /* touch overlay is always user 1 */
 
    for (i = 0; i < android->pads_connected; i++)
@@ -1278,9 +1295,9 @@ static void handle_hotplug(android_input_t *android,
    else if (
              string_starts_with_size(device_model, "AFT", STRLEN_CONST("AFT")) &&
              (
-              strstr(device_model, "AFTB") || 
+              strstr(device_model, "AFTB") ||
               strstr(device_model, "AFTT") ||
-              strstr(device_model, "AFTS") || 
+              strstr(device_model, "AFTS") ||
               strstr(device_model, "AFTM") ||
               strstr(device_model, "AFTRS")
              )
@@ -1378,7 +1395,7 @@ static void handle_hotplug(android_input_t *android,
          vendorId,
          productId);
 
-   android->pad_states[android->pads_connected].id   = 
+   android->pad_states[android->pads_connected].id   =
       g_android->id[android->pads_connected]         = id;
    android->pad_states[android->pads_connected].port = *port;
 
@@ -1413,21 +1430,21 @@ static void engine_handle_touchpad(
    for(n = 0; n < pointer_count; ++n)
    {
       int pointer_id	=   AMotionEvent_getPointerId(event, n);
-      int action     =   AMOTION_EVENT_ACTION_MASK 
+      int action     =   AMOTION_EVENT_ACTION_MASK
                        & AMotionEvent_getAction(event);
       int raw_action	=   AMotionEvent_getAction(event);
-      if (     action  == AMOTION_EVENT_ACTION_POINTER_DOWN 
+      if (     action  == AMOTION_EVENT_ACTION_POINTER_DOWN
             || action  == AMOTION_EVENT_ACTION_POINTER_UP )
       {
          int pointer_index = (AMotionEvent_getAction( event ) & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
          pointer_id        = AMotionEvent_getPointerId( event, pointer_index);
       }
 
-      if (     action  == AMOTION_EVENT_ACTION_DOWN 
+      if (     action  == AMOTION_EVENT_ACTION_DOWN
             || action  == AMOTION_EVENT_ACTION_POINTER_DOWN )
          touchstate[pointer_id].down = 1;
-      else if (action  == AMOTION_EVENT_ACTION_UP 
-            || action  == AMOTION_EVENT_ACTION_POINTER_UP 
+      else if (action  == AMOTION_EVENT_ACTION_UP
+            || action  == AMOTION_EVENT_ACTION_POINTER_UP
             || action  == AMOTION_EVENT_ACTION_CANCEL )
          touchstate[pointer_id].down = 0;
 
@@ -1437,17 +1454,17 @@ static void engine_handle_touchpad(
          int y = touchstate[pointer_id].y  = AMotionEvent_getY(event, n);
          if (x < 360)
          {
-            android->analog_state[port][0] = 
+            android->analog_state[port][0] =
                (int16_t)((x / 180.0 - 1.0f) * 32767.0f);
-            android->analog_state[port][1] = 
+            android->analog_state[port][1] =
                (int16_t)((y / 180.0 - 1.0f) * 32767.0f);
          }
          else if (x >= 606)
          {
             x -= 606;
-            android->analog_state[port][2] = 
+            android->analog_state[port][2] =
                (int16_t)((x / 180.0 - 1.0f) * 32767.0f);
-            android->analog_state[port][3] = 
+            android->analog_state[port][3] =
                (int16_t)((y / 180.0 - 1.0f) * 32767.0f);
          }
       }
@@ -1562,7 +1579,10 @@ static void android_input_poll_input_default(android_input_t *android)
                else if ((source & AINPUT_SOURCE_STYLUS) == AINPUT_SOURCE_STYLUS)
                   android_input_poll_event_type_motion_stylus(android, event,
                         port, source);
-               else if ((source & (AINPUT_SOURCE_TOUCHSCREEN | AINPUT_SOURCE_MOUSE)))
+               /* Only handle events from a touchscreen or mouse */
+               else if ((source & (AINPUT_SOURCE_TOUCHSCREEN
+                           | AINPUT_SOURCE_MOUSE
+                           | AINPUT_SOURCE_MOUSE_RELATIVE)))
                   android_input_poll_event_type_motion(android, event,
                         port, source);
                else
@@ -1653,7 +1673,7 @@ static void android_input_poll(void *data)
    settings_t            *settings = config_get_ptr();
 
    while ((ident =
-            ALooper_pollAll((input_config_binds[0][RARCH_PAUSE_TOGGLE].valid 
+            ALooper_pollAll((input_config_binds[0][RARCH_PAUSE_TOGGLE].valid
                && input_key_pressed(RARCH_PAUSE_TOGGLE,
                   ANDROID_KEYBOARD_PORT_INPUT_PRESSED(input_config_binds[0],
                      RARCH_PAUSE_TOGGLE)))
@@ -1754,7 +1774,7 @@ static int16_t android_input_state(
       case RETRO_DEVICE_ANALOG:
          break;
       case RETRO_DEVICE_KEYBOARD:
-         return (id < RETROK_LAST) 
+         return (id < RETROK_LAST)
             && BIT_GET(android_key_state[ANDROID_KEYBOARD_PORT],
                   rarch_keysym_lut[id]);
       case RETRO_DEVICE_MOUSE:
@@ -1846,7 +1866,7 @@ static int16_t android_input_state(
                return android->pointer_count;
             case RARCH_DEVICE_ID_POINTER_BACK:
             {
-               const struct retro_keybind *keyptr = 
+               const struct retro_keybind *keyptr =
                   &input_autoconf_binds[0][RARCH_MENU_TOGGLE];
                if (keyptr->joykey == 0)
                   return ANDROID_KEYBOARD_INPUT_PRESSED(AKEYCODE_BACK);
@@ -2040,6 +2060,18 @@ static float android_input_get_sensor_input(void *data,
    return 0.0f;
 }
 
+static void android_input_grab_mouse(void *data, bool state)
+{
+   JNIEnv *env = jni_thread_getenv();
+
+   if (!env || !g_android)
+      return;
+
+   if (g_android->inputGrabMouse)
+      CALL_VOID_METHOD_PARAM(env, g_android->activity->clazz,
+            g_android->inputGrabMouse, state);
+}
+
 static void android_input_keypress_vibrate()
 {
    static const int keyboard_press = 3;
@@ -2061,8 +2093,7 @@ input_driver_t input_android = {
    android_input_get_sensor_input,
    android_input_get_capabilities,
    "android",
-
-   NULL,                            /* grab_mouse */
+   android_input_grab_mouse,
    NULL,
    android_input_keypress_vibrate
 };
