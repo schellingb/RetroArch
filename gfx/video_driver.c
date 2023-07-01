@@ -3204,10 +3204,11 @@ bool video_driver_init_internal(bool *video_is_threaded, bool verbosity_enabled)
    if ((enum rotation)settings->uints.screen_orientation != ORIENTATION_NORMAL)
       video_display_server_set_screen_orientation((enum rotation)settings->uints.screen_orientation);
 
-   /* Ensure that we preserve the 'grab mouse'
-    * state if it was enabled prior to driver
-    * (re-)initialisation */
-   if (input_st->flags & INP_FLAG_GRAB_MOUSE_STATE)
+   /* Ensure that we preserve the 'grab mouse' state if it was enabled prior
+    * to driver (re-)initialisation. Also on platforms without windowed video
+    * always grab the mouse (i.e. Android) */
+   if ((input_st->flags & INP_FLAG_GRAB_MOUSE_STATE)
+         || !video_driver_has_windowed())
    {
       if (     video_st->poke
             && video_st->poke->show_mouse)

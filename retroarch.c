@@ -2785,7 +2785,8 @@ bool command_event(enum event_command cmd, void *data)
                /* Reload the original config */
                config_unload_override();
 
-               if (!settings->bools.video_fullscreen)
+               if (!settings->bools.video_fullscreen
+                     && video_driver_has_windowed())
                {
                   input_driver_state_t *input_st = input_state_get_ptr();
                   if (     video_st->poke
@@ -3933,7 +3934,7 @@ bool command_event(enum event_command cmd, void *data)
             /* If we go fullscreen we drop all drivers and
              * reinitialize to be safe. */
             command_event(CMD_EVENT_REINIT, NULL);
-            if (video_fullscreen)
+            if (video_fullscreen || !video_driver_has_windowed())
             {
                if (     video_st->poke
                      && video_st->poke->show_mouse)
@@ -4239,7 +4240,8 @@ bool command_event(enum event_command cmd, void *data)
                }
                /* Ungrab only if windowed and auto mouse grab is disabled */
                else if (!video_fullscreen &&
-                     !settings->bools.input_auto_mouse_grab)
+                     !settings->bools.input_auto_mouse_grab &&
+                     video_driver_has_windowed())
                {
                   if (input_driver_ungrab_mouse())
                      input_st->flags &= ~INP_FLAG_GRAB_MOUSE_STATE;
